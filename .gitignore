@@ -1,0 +1,21 @@
+# Environment files
+.env
+api/.env
+
+# Kubernetes secret files
+Monitoring/grafana-secret.yaml
+k8s-prod/backend-secret.yaml
+k8s-prod/mysql-secret.yaml
+
+# Node
+node_modules/
+api/node_modules/
+client/node_modules/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
