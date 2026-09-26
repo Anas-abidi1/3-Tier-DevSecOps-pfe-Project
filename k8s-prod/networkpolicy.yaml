@@ -1,0 +1,84 @@
+# Requires a CNI that enforces NetworkPolicy (e.g. Calico, Cilium, or the
+# AWS VPC CNI's network policy feature enabled). On a default EKS cluster
+# with plain VPC CNI and no policy engine installed, these are accepted but
+# NOT enforced -- check `kubectl get networkpolicy -n prod` works as
+# expected and verify enforcement before relying on this for isolation.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: prod
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+
+---
+# Only the ingress controller may reach the frontend and backend directly.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-frontend
+  namespace: prod
+spec:
+  podSelector:
+    matchLabels:
+      app: frontend
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        # Kubernetes auto-labels every namespace with
+        # kubernetes.io/metadata.name (since 1.21+), so this matches only
+        # pods in the ingress-nginx namespace rather than every namespace.
+        # Adjust the value if your ingress controller lives elsewhere.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - port: 80
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-backend
+  namespace: prod
+spec:
+  podSelector:
+    matchLabels:
+      app: backend
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - port: 5000
+
+---
+# Only the backend may reach MySQL -- not the frontend, and not anything
+# outside this namespace. This is the main point of this file: if the
+# public-facing frontend is ever compromised, it still can't reach the
+# database directly.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-backend-to-mysql
+  namespace: prod
+spec:
+  podSelector:
+    matchLabels:
+      app: mysql
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: backend
+      ports:
+        - port: 3306

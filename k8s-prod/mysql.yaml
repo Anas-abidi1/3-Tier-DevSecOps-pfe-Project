@@ -1,0 +1,133 @@
+---
+# The mysql-secret referenced below is intentionally NOT defined in this
+# file. Committing real passwords into a YAML file that goes into git is
+# exactly the mistake that leaked the "Aditya" password earlier in this
+# project. Create the real secret out-of-band instead -- see
+# mysql-secret.example.yaml in this same folder for the exact keys needed
+# and two ways to create it (kubectl imperative command, or Jenkins
+# credentials + a templated apply step).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql-config
+  namespace: prod
+  labels:
+    app: mysql
+data:
+  MYSQL_DATABASE: crud_app
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql-initdb-config
+  namespace: prod
+  labels:
+    app: mysql
+data:
+  init.sql: |
+    CREATE DATABASE IF NOT EXISTS crud_app;
+
+    USE crud_app;
+
+    CREATE TABLE IF NOT EXISTS users (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      name VARCHAR(255) NOT NULL,
+      email VARCHAR(255) NOT NULL UNIQUE,
+      password VARCHAR(255) NOT NULL,
+      role ENUM('admin', 'viewer') NOT NULL DEFAULT 'viewer',
+      is_active TINYINT(1) DEFAULT 1,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+  namespace: prod
+  labels:
+    app: mysql
+spec:
+  clusterIP: None
+  selector:
+    app: mysql
+  ports:
+    - port: 3306
+      targetPort: 3306
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql
+  namespace: prod
+  labels:
+    app: mysql
+spec:
+  serviceName: mysql
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      containers:
+        - name: mysql
+          image: mysql:8
+          ports:
+            - containerPort: 3306
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_ROOT_PASSWORD
+            - name: MYSQL_DATABASE
+              valueFrom:
+                configMapKeyRef:
+                  name: mysql-config
+                  key: MYSQL_DATABASE
+            # The official mysql image auto-creates this user with full
+            # rights on MYSQL_DATABASE. The backend uses this account
+            # instead of root (see backend.yaml) -- least privilege: a
+            # compromised backend pod's DB credentials can only touch
+            # crud_app, not the whole MySQL instance.
+            - name: MYSQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_USER
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_PASSWORD
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          volumeMounts:
+            - name: mysql-persistent-storage
+              mountPath: /var/lib/mysql
+            - name: initdb
+              mountPath: /docker-entrypoint-initdb.d
+      volumes:
+        - name: initdb
+          configMap:
+            name: mysql-initdb-config
+  volumeClaimTemplates:
+    - metadata:
+        name: mysql-persistent-storage
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        storageClassName: ebs-sc
+        resources:
+          requests:
+            storage: 5Gi

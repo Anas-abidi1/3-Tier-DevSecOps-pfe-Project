@@ -1,0 +1,11 @@
+# https://www.robotstxt.org/robotstxt.html
+#
+# Changed from allow-all to disallow-all: this is a login-gated admin/user
+# management dashboard, not public marketing content, so there's little
+# upside to search engines indexing its login/register pages and some
+# downside (login URLs showing up in search results). If this is meant to
+# be a public-facing demo/portfolio piece instead, revert to:
+#   User-agent: *
+#   Disallow:
+User-agent: *
+Disallow: /

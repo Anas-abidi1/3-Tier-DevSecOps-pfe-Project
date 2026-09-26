@@ -1,0 +1,153 @@
+
+pipeline {
+    agent any
+    
+    tools {
+        nodejs 'nodejs23'
+    }
+
+    environment {
+        SCANNER_HOME = tool 'sonar-scanner'
+        // Tag images with the build number instead of a mutable 'latest' tag,
+        // so every deployment is traceable back to the exact build/commit
+        // that produced it, and a rollback can target a known-good tag.
+        IMAGE_TAG = "${env.BUILD_NUMBER}"
+    }
+    stages {
+        stage('Git Checkout') {
+            steps {
+                // Point this at your own repository, not a tutorial fork.
+                git branch: 'main', url: 'https://github.com/YOUR_ORG/YOUR_REPO.git'
+            }
+        }
+        
+        stage('Frontend Compilation') {
+            steps {
+                dir('client') {
+                    sh 'find . -name "*.js" -exec node --check {} +'
+                }
+            }
+        }
+        
+        stage('Backend Compilation') {
+            steps {
+                dir('api') {
+                    sh 'find . -name "*.js" -exec node --check {} +'
+                }
+            }
+        }
+        
+        stage('GitLeaks Scan') {
+            steps {
+                sh 'gitleaks detect --source ./client --exit-code 1'
+                sh 'gitleaks detect --source ./api --exit-code 1'
+            }
+        }
+        
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('sonar') {
+                    sh ''' $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=NodeJS-Project \
+                            -Dsonar.projectKey=NodeJS-Project '''
+                }
+            }
+        }
+        stage('Quality Gate Check') {
+            steps {
+                timeout(time: 1, unit: 'HOURS') {
+                    waitForQualityGate abortPipeline: false, credentialsId: 'sonar-token'
+                }
+            }
+        }
+        stage('Trivy FS Scan') {
+            steps {
+                sh 'trivy fs --format table -o fs-report.html .'
+            }
+        }
+        
+        stage('Build-Tag & Push Backend Docker Image') {
+            steps {
+                script {
+                    withDockerRegistry(credentialsId: 'docker-cred') {
+                        dir('api') {
+                            sh "docker build -t YOUR_DOCKERHUB_USER/backend:${IMAGE_TAG} ."
+                            sh "trivy image --exit-code 1 --severity HIGH,CRITICAL --format table -o backend-image-report.html YOUR_DOCKERHUB_USER/backend:${IMAGE_TAG}"
+                            sh "docker push YOUR_DOCKERHUB_USER/backend:${IMAGE_TAG}"
+                        }
+                    }
+                }
+            }
+        }  
+            
+        stage('Build-Tag & Push Frontend Docker Image') {
+            steps {
+                script {
+                    withDockerRegistry(credentialsId: 'docker-cred') {
+                        dir('client') {
+                            sh "docker build -t YOUR_DOCKERHUB_USER/frontend:${IMAGE_TAG} ."
+                            sh "trivy image --exit-code 1 --severity HIGH,CRITICAL --format table -o frontend-image-report.html YOUR_DOCKERHUB_USER/frontend:${IMAGE_TAG}"
+                            sh "docker push YOUR_DOCKERHUB_USER/frontend:${IMAGE_TAG}"
+                        }
+                    }
+                }
+            }
+             
+        }  
+        
+        stage('Manual Approval for Production') {
+            steps {
+                timeout(time: 1, unit: 'HOURS') {
+                    input message: 'Approve deployment to PRODUCTION?', ok: 'Deploy'
+                }
+            }
+        }
+        
+       stage('Deployment To Prod') {
+            steps {
+                script {
+                    // restrictKubeConfigAccess set to true: previously false meant
+                    // any other pipeline/job on this Jenkins instance could also
+                    // use this kubeconfig credential. true scopes it to this job.
+                    withKubeConfig(caCertificate: '', clusterName: 'devopsshack-cluster', contextName: '', credentialsId: 'k8-prod-token', namespace: 'prod', restrictKubeConfigAccess: true, serverUrl: 'https://YOUR_EKS_CLUSTER_ENDPOINT') {
+                        // NOTE: mysql-secret.yaml / backend-secret.yaml contain real
+                        // (lab-only) values for this practice project -- see the
+                        // warning comments in those files. For any non-lab project,
+                        // go back to creating these out-of-band per
+                        // mysql-secret.example.yaml / backend-secret.example.yaml
+                        // instead of applying a committed file.
+                        sh 'kubectl apply -f k8s-prod/sc.yaml'
+                        sleep 20
+                        sh 'kubectl apply -f k8s-prod/networkpolicy.yaml -n prod'
+                        sh 'kubectl apply -f k8s-prod/mysql-secret.yaml -n prod'
+                        sh 'kubectl apply -f k8s-prod/backend-secret.yaml -n prod'
+                        sh 'kubectl apply -f k8s-prod/mysql.yaml -n prod'
+                        sh 'kubectl apply -f k8s-prod/backend.yaml -n prod'
+                        sh 'kubectl apply -f k8s-prod/frontend.yaml -n prod'
+                        sh 'kubectl apply -f k8s-prod/ci.yaml'
+                        sh 'kubectl apply -f k8s-prod/ingress.yaml -n prod'
+                        // Bump the running images to this build's tag, since
+                        // frontend.yaml/backend.yaml ship with a placeholder tag
+                        // rather than a real one baked in.
+                        sh "kubectl set image deployment/backend backend=YOUR_DOCKERHUB_USER/backend:${IMAGE_TAG} -n prod"
+                        sh "kubectl set image deployment/frontend frontend=YOUR_DOCKERHUB_USER/frontend:${IMAGE_TAG} -n prod"
+                        sleep 30
+                    }
+                }
+            }
+        }
+        
+        stage('Verify Deployment To Prod') {
+            steps {
+                script {
+                    withKubeConfig(caCertificate: '', clusterName: 'devopsshack-cluster', contextName: '', credentialsId: 'k8-prod-token', namespace: 'prod', restrictKubeConfigAccess: true, serverUrl: 'https://YOUR_EKS_CLUSTER_ENDPOINT') {
+                        sh 'kubectl get pods -n prod'
+                        sleep 20
+                         sh 'kubectl get ingress -n prod'
+                        
+                    }
+                }
+            }
+        }
+            
+    }
+}

@@ -1,0 +1,69 @@
+---
+alertmanager:
+  enabled: false
+
+prometheus:
+  prometheusSpec:
+    # FIX: was `type: LoadBalancer`. Prometheus has NO built-in
+    # authentication -- a public LoadBalancer here means anyone on the
+    # internet who finds the IP can query every metric this cluster
+    # exposes (pod names, resource usage, internal service topology, and
+    # potentially more depending on what's being scraped). Default
+    # ClusterIP keeps it reachable only from inside the cluster; use
+    # `kubectl port-forward` for occasional admin access instead.
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: ebs-sc
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 5Gi
+
+grafana:
+  enabled: true
+  # FIX: was `service: { type: LoadBalancer }` with a hardcoded
+  # admin123 password -- a public, unauthenticated-by-default path to an
+  # admin login using a well-known weak password. Grafana is the one
+  # component here that's actually meant to have external, human access
+  # (Prometheus/node-exporter/kube-state-metrics are not), so instead of a
+  # LoadBalancer it's exposed through the same nginx Ingress + cert-manager
+  # TLS already set up for the app in k8s-prod/ingress.yaml.
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    annotations:
+      cert-manager.io/cluster-issuer: letsencrypt-prod
+      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    hosts:
+      - grafana.YOUR_DOMAIN.example.com
+    tls:
+      - secretName: grafana-tls
+        hosts:
+          - grafana.YOUR_DOMAIN.example.com
+  # FIX: no hardcoded password. The admin password now comes from a Secret
+  # created out-of-band -- see grafana-secret.example.yaml in this folder.
+  admin:
+    existingSecret: grafana-admin-secret
+    userKey: admin-user
+    passwordKey: admin-password
+
+nodeExporter:
+  # FIX: LoadBalancer removed -- node-exporter has no authentication and
+  # should only ever be scraped from inside the cluster.
+  enabled: true
+
+kubeStateMetrics:
+  # FIX: LoadBalancer removed -- same reasoning as node-exporter.
+  enabled: true
+
+additionalScrapeConfigs:
+  - job_name: node-exporter
+    static_configs:
+      - targets:
+          - node-exporter:9100
+  - job_name: kube-state-metrics
+    static_configs:
+      - targets:
+          - kube-state-metrics:8080

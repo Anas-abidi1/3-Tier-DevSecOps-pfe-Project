@@ -1,0 +1,35 @@
+             Monitoring Setup In EKS
+
+# Add Helm Repo
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+
+# Create the namespace and apply the Grafana admin secret BEFORE installing
+# -- values.yaml references this secret by name, and it must exist first.
+# grafana-secret.yaml has real (lab-only) values for this practice project.
+kubectl create namespace monitoring
+kubectl apply -f grafana-secret.yaml -n monitoring
+
+# Deploy (values.yaml is in this same folder)
+helm upgrade --install monitoring prometheus-community/kube-prometheus-stack -f values.yaml -n monitoring --create-namespace
+
+# --- Access ---
+#
+# Grafana: reachable via the Ingress configured in values.yaml, at
+# https://grafana.YOUR_DOMAIN.example.com (once DNS points at your ingress
+# and cert-manager has issued the TLS cert).
+#
+# Prometheus / node-exporter / kube-state-metrics: intentionally NOT
+# exposed publicly (see values.yaml comments -- none of these have
+# authentication). For occasional admin/debugging access, use
+# port-forward instead of a LoadBalancer:
+#
+#   kubectl port-forward -n monitoring svc/monitoring-kube-prometheus-prometheus 9090:9090
+#   kubectl port-forward -n monitoring svc/monitoring-kube-state-metrics 8080:8080
+#
+# Then open http://localhost:9090 (or :8080) in your browser.
+#
+# REMOVED: the original version of this file patched all three of these
+# services to `type: LoadBalancer` after install, which would have publicly
+# exposed unauthenticated metrics endpoints to the internet regardless of
+# what values.yaml said. Don't run that patch.

@@ -1,0 +1,121 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-config
+  namespace: prod
+  labels:
+    app: backend
+data:
+  # Used by app.js's CORS check. Must match your real frontend origin(s),
+  # comma-separated if more than one (e.g. apex + www).
+  CLIENT_URL: "https://YOUR_DOMAIN.example.com,https://www.YOUR_DOMAIN.example.com"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: prod
+  labels:
+    app: backend
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: backend
+          # Placeholder -- wire this up to the tag Jenkinsfile_CICD actually
+          # pushes (${IMAGE_TAG} = build number) instead of a hardcoded
+          # 'latest', e.g. via `kubectl set image` in the deploy stage, or a
+          # templating step (kustomize/envsubst) before `kubectl apply`.
+          # Using 'latest' means you can't tell which build is running, and
+          # a rollback has no specific version to roll back to.
+          image: YOUR_DOCKERHUB_USER/backend:IMAGE_TAG_PLACEHOLDER
+          ports:
+            - containerPort: 5000
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false # app.js doesn't need to write to disk, but left false to avoid breaking anything not reviewed here; set true if you confirm no writes occur.
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: DB_HOST
+              value: mysql
+            # FIX: previously hardcoded to 'root'. The backend now connects
+            # as the least-privilege crud_app_user created via mysql.yaml's
+            # MYSQL_USER/MYSQL_PASSWORD env vars, matching the same fix
+            # already applied to docker-compose.yaml.
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_USER
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: MYSQL_PASSWORD
+            - name: DB_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: mysql-config
+                  key: MYSQL_DATABASE
+            # FIX: this was missing entirely. app.js calls process.exit(1) if
+            # JWT_SECRET isn't set (a deliberate fail-fast added earlier in
+            # this project) -- without this, every backend pod here would
+            # crash-loop on startup.
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secret
+                  key: JWT_SECRET
+            # FIX: also missing. Without it, app.js's CORS check falls back
+            # to allowing no browser origins at all (fail-closed) rather
+            # than the app breaking silently or -- as it did before that fix
+            # -- allowing every origin.
+            - name: CLIENT_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: CLIENT_URL
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 5000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 5000
+            initialDelaySeconds: 15
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-svc
+  namespace: prod
+spec:
+  selector:
+    app: backend
+  ports:
+    - port: 5000
+      targetPort: 5000
+  type: ClusterIP
