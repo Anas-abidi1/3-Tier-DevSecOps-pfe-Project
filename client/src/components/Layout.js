@@ -22,7 +22,6 @@ function Layout({ children }) {
           <h3>Connect</h3>
           <ul className="social-links">
             <li><a className="sidebar-btn" href="https://www.linkedin.com/company/smartskills-k/" target="_blank" rel="noopener noreferrer">LinkedIn</a></li>
-            <li><a className="sidebar-btn" href="https://www.facebook.com/profile.php?id=100035478473049" target="_blank" rel="noopener noreferrer">Facebook</a></li>
           </ul>
         </aside>
         <main className="main-content fade-in">
