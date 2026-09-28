@@ -9,21 +9,14 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: ${MYSQL_DATABASE}
-      # Official mysql image auto-creates this user with full rights on
-      # MYSQL_DATABASE — the backend uses this instead of root.
       MYSQL_USER: ${MYSQL_USER}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD}
     volumes:
       - mysql-data:/var/lib/mysql
       - ./mysql-init:/docker-entrypoint-initdb.d
-    # Port 3306 is intentionally NOT published to the host. Other containers
-    # on the compose network can still reach it at mysql:3306. Uncomment only
-    # if you need to connect a local MySQL client directly from the host.
-    # ports:
-    #   - "3306:3306"
 
   backend:
-    build: ./api
+    image: anas999/backend:latest
     container_name: backend-api
     restart: always
     env_file:
@@ -45,10 +38,7 @@ services:
       - "5000:5000"
 
   frontend:
-    build:
-      context: ./client
-      args:
-        REACT_APP_API: ${REACT_APP_API}
+    image: anas999/frontend:latest
     container_name: frontend-react
     restart: always
     ports:
