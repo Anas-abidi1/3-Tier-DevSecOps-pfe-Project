@@ -1,0 +1,1502 @@
+{
+  "name": "SOAR-pfe",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "9307a01a-0b91-40e2-874f-968f50104788",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -3200,
+        0
+      ],
+      "id": "29a264c2-2885-426d-bf40-6f66b23c617e",
+      "name": "Get Alerts",
+      "webhookId": "9307a01a-0b91-40e2-874f-968f50104788"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.limit",
+      "typeVersion": 1,
+      "position": [
+        -2720,
+        0
+      ],
+      "id": "fd925dc4-7e9e-4518-8b5e-d753c71f6928",
+      "name": "Limit"
+    },
+    {
+      "parameters": {
+        "curlImport": "",
+        "httpVariantWarning": "",
+        "method": "GET",
+        "url": "=https://otx.alienvault.com/api/v1/indicators/file/{{ $json.sha256 }}",
+        "": "",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "alienVaultApi",
+        "provideSslCertificates": false,
+        "sendQuery": false,
+        "sendHeaders": false,
+        "sendBody": false,
+        "options": {},
+        "infoMessage": ""
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -2160,
+        -48
+      ],
+      "id": "2de4eb14-4db2-4241-b94d-9f9143d40567",
+      "name": "Hash Validation through AlienVault",
+      "extendsCredential": "alienVaultApi",
+      "credentials": {
+        "alienVaultApi": {
+          "id": "r0X4zKQGyo6zXUpD",
+          "name": "AlienVault account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "curlImport": "",
+        "httpVariantWarning": "",
+        "method": "GET",
+        "url": "=https://www.virustotal.com/api/v3/files/{{ $json.sha256 }}",
+        "": "",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "virusTotalApi",
+        "provideSslCertificates": false,
+        "sendQuery": false,
+        "sendHeaders": false,
+        "sendBody": false,
+        "options": {},
+        "infoMessage": ""
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -2176,
+        -256
+      ],
+      "id": "d8d0f9f8-47ac-450f-b713-b6d8f7bae9a9",
+      "name": "Hash Validation through VirusTotal",
+      "extendsCredential": "virusTotalApi",
+      "credentials": {
+        "virusTotalApi": {
+          "id": "b0PbNlihsyQWVGcn",
+          "name": "VirusTotal account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        -1952,
+        -128
+      ],
+      "id": "3488b727-4eaf-427b-918d-cde8954a3bd6",
+      "name": "Merge Both Results"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// CLEAN + MERGE ALL THREAT INTELLIGENCE\n// OUTPUT: EXACTLY ONE JSON ITEM\n// ============================================================\n\n\n// ============================================================\n// 1. ORIGINAL HASH CLEANING\n// ============================================================\n\nconst seenHashes = new Set();\nconst cleanedHashes = [];\n\nfor (const item of items) {\n  const data = item.json?.data;\n  if (!data || !data.attributes) continue;\n\n  const attrs = data.attributes;\n  const sha256 = attrs.sha256;\n\n  // Deduplicate by SHA256\n  if (seenHashes.has(sha256)) continue;\n  seenHashes.add(sha256);\n\n  cleanedHashes.push({\n    sha256: sha256,\n    md5: attrs.md5,\n    sha1: attrs.sha1,\n\n    file_type: attrs.type_description,\n    extension: attrs.type_extension,\n    size_bytes: attrs.size,\n    magic: attrs.magic,\n\n    reputation: attrs.reputation,\n    times_submitted: attrs.times_submitted,\n    first_seen: attrs.first_seen_itw_date,\n    last_analysis_date: attrs.last_analysis_date,\n\n    detection_stats: {\n      malicious: attrs.last_analysis_stats?.malicious,\n      suspicious: attrs.last_analysis_stats?.suspicious,\n      undetected: attrs.last_analysis_stats?.undetected\n    },\n\n    tags: attrs.tags || [],\n    packers: attrs.packers || {},\n    meaningful_name: attrs.meaningful_name,\n    known_names: attrs.names?.slice(0, 5)\n  });\n}\n\n\n// ============================================================\n// 2. IP VIRUSTOTAL\n// ============================================================\n\nlet ipVirusTotal = null;\n\nfor (const item of items) {\n\n  const json = item.json || {};\n  const data = json.data;\n\n  if (\n    data &&\n    data.type === \"ip_address\" &&\n    data.attributes\n  ) {\n\n    const attrs = data.attributes;\n    const stats = attrs.last_analysis_stats || {};\n    const analysis = attrs.last_analysis_results || {};\n\n    const maliciousEngines = [];\n    const suspiciousEngines = [];\n\n    for (const [engine, result] of Object.entries(analysis)) {\n\n      if (!result) continue;\n\n      if (result.category === \"malicious\") {\n        maliciousEngines.push({\n          engine: engine,\n          result: result.result || null\n        });\n      }\n\n      if (result.category === \"suspicious\") {\n        suspiciousEngines.push({\n          engine: engine,\n          result: result.result || null\n        });\n      }\n    }\n\n    ipVirusTotal = {\n      ip: data.id,\n\n      reputation: attrs.reputation ?? null,\n\n      country: attrs.country ?? null,\n      continent: attrs.continent ?? null,\n\n      asn: attrs.asn ?? null,\n      as_owner: attrs.as_owner ?? null,\n\n      detection_stats: {\n        malicious: stats.malicious ?? 0,\n        suspicious: stats.suspicious ?? 0,\n        undetected: stats.undetected ?? 0,\n        harmless: stats.harmless ?? 0\n      },\n\n      malicious_engines: maliciousEngines,\n      suspicious_engines: suspiciousEngines\n    };\n\n    break;\n  }\n}\n\n\n// ============================================================\n// 3. IP-API\n// ============================================================\n\nlet ipApi = null;\n\nfor (const item of items) {\n\n  const json = item.json || {};\n\n  if (\n    json.status &&\n    (\n      json.query ||\n      json.country ||\n      json.countryCode ||\n      json.isp ||\n      json.org\n    )\n  ) {\n\n    ipApi = {\n      ip: json.query ?? null,\n\n      country: json.country ?? null,\n      country_code: json.countryCode ?? null,\n\n      region: json.regionName ?? null,\n      city: json.city ?? null,\n\n      timezone: json.timezone ?? null,\n\n      isp: json.isp ?? null,\n      organization: json.org ?? null,\n      asn: json.as ?? null,\n\n      status: json.status ?? null\n    };\n\n    break;\n  }\n}\n\n\n// ============================================================\n// 4. FINAL RESULT\n// ============================================================\n// IMPORTANT:\n// Always return ONE item only.\n// Hash + IP information are inside the same JSON reference.\n// ============================================================\n\nreturn [\n  {\n    json: {\n      \n      hash_threat_intelligence: cleanedHashes,\n\n      ip_threat_intelligence: {\n        virustotal: ipVirusTotal,\n        ip_api: ipApi\n      }\n\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1744,
+        16
+      ],
+      "id": "dce19687-1b01-4748-9729-6401610ba944",
+      "name": "Clean Results",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Analyze the following Wazuh security alert using the alert type and the available contextual evidence.\n\nAlert Type: {{ $('Extract IOCs2').item.json.alert_type }}\n\nAlert Metadata:\n\n* Rule ID: {{ $('Get Alerts').item.json.body.rule.id }}\n* Rule Description: {{ $('Extract IOCs2').item.json.rule_description }}\n* Severity: {{ $('Get Alerts').item.json.body.rule.level }}\n* Host: {{ $('Get Alerts').item.json.body.agent.ip }}\n* Full Log: {{ $('Get Alerts').item.json.body }}\n* Event Data: {{ JSON.stringify($json, null, 2) }}\n* threat intellgence result:{{ $json.hash_threat_intelligence }}\nand {{ $json.ip_threat_intelligence }}\nUse the following rules to select the relevant evidence:\n\nIf the Alert Type is File:\n\n* Analyze the file hash reputation.\n* Analyze detection statistics and threat intelligence results.\n* Analyze file metadata and other available file indicators.\n* Do not require network or application vulnerability information.\n\nIf the Alert Type is Network:\n\n* Analyze source and destination IP addresses.\n* Analyze source and destination ports.\n* Analyze protocol, signature, and attack category.\n* Analyze available IP reputation and network context.\n* A network alert does not require file hash or application CVE information.\n\nIf the alert is a Web/Application attack:\n\n* Analyze the HTTP request, URL, parameters, payload, targeted application, attack pattern, and other available application-layer evidence.\n* Use the CI/CD deployment context available in:\n  {{ $json.criticalCves }}\n* In particular, use `jenkinsReport.needsAction` to identify security issues, vulnerabilities, failed security checks, or other findings from the application deployment that may help explain the runtime attack.\n* Correlate deployment findings with the Wazuh web/application alert when there is supporting evidence.\n* Use this information to identify possible root causes and recommend appropriate corrections.\n* Do not assume that a deployment finding caused the attack unless the available evidence supports that conclusion.\n\nIf the alert is a System/Endpoint attack:\n\n* Prioritize host, process, user, command, authentication, privilege, persistence, and MITRE ATT&CK evidence.\n* Do not use application deployment findings unless there is clear evidence that they are relevant to the alert.\n\nGeneral rules:\n\n* Use only evidence relevant to the alert.\n* Do not invent missing information.\n* Distinguish confirmed evidence from correlation or hypothesis.\n* Do not treat a vulnerability or deployment finding as proof that it was exploited.\n* When evidence is insufficient, explicitly state the uncertainty.\n* Provide a concise explanation of the likely cause and appropriate remediation recommendations based on the available evidence.\n",
+        "hasOutputParser": true,
+        "needsFallback": true,
+        "options": {
+          "systemMessage": "You are a senior SOC analyst integrated inside an automated SOAR system.\n\nYou must return strictly valid JSON matching the required schema.\n\nRules:\n- No markdown\n- No explanations outside JSON\n- All keys must always exist\n- Arrays must never be null\n- If no MITRE technique applies, return empty array\n- Risk score must be between 1 and 4\n- Base analysis strictly on provided alert data\n- Do not hallucinate indicators\n- Generate a title and timestamp if a case is required"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        -1008,
+        16
+      ],
+      "id": "e4d72d08-dc72-4275-8533-cc65f3e2f762",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $('Get Alerts').item.json.body.id }}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [
+        -896,
+        368
+      ],
+      "id": "8b0418ec-ddf2-4902-9e56-181d6585707e",
+      "name": "Simple Memory"
+    },
+    {
+      "parameters": {
+        "jsonSchemaExample": "{\n  \"summary\": \"\",\n  \"technical_details\": \"\",\n  \"risk_level\": \"Low | Medium | High | Critical\",\n  \"confidence\": \"Low | Medium | High\",\n  \"mitre_techniques\": [\n    {\n      \"technique\": \"\",\n      \"technique_id\": \"\",\n      \"tactic\": \"\",\n      \"justification\": \"\"\n    }\n  ],\n  \"key_indicators\": [\n    \"\"\n  ],\n  \"cicd_analysis\": {\n    \"relevant\": false,\n    \"deployment_findings\": [\n      \"\"\n    ],\n    \"related_vulnerabilities\": [\n      {\n        \"cve_id\": \"\",\n        \"severity\": \"Low | Medium | High | Critical\",\n        \"component\": \"\",\n        \"relevance\": \"\"\n      }\n    ],\n    \"potential_root_cause\": \"\",\n    \"correlation_confidence\": \"Low | Medium | High\",\n    \"recommended_corrections\": [\n      \"\"\n    ]\n  },\n  \"recommended_investigation_steps\": [\n    \"\"\n  ],\n  \"recommended_response_actions\": [\n    \"\"\n  ],\n  \"automation_recommendation\": {\n    \"should_escalate\": true,\n    \"should_create_case\": true,\n    \"should_isolate_host\": false,\n    \"should_block_ip\": false,\n    \"should_notify_soc\": true\n  },\n  \"final_decision\": \"Escalate | Investigate Further | Close as Benign\"\n}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        -720,
+        368
+      ],
+      "id": "fe15b57a-fc56-4f96-ab94-ade9af246c67",
+      "name": "Structured Output Parser"
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-3.1-flash-lite",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        -1200,
+        368
+      ],
+      "id": "b3f5fe07-4862-4e5c-bef4-a1c45d2efe09",
+      "name": "Google Gemini Chat Model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "2i1zvzclfezIdjc4",
+          "name": "Google Gemini(PaLM) Api account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "7db1c2b1-2c76-412b-bf09-ae570dbe3252",
+              "leftValue": "={{ $json.output.automation_recommendation.should_create_case }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "401c0d15-c5a4-430b-823b-6a82e143fe67",
+              "leftValue": "",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {
+          "ignoreCase": false
+        }
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -656,
+        -176
+      ],
+      "id": "69601896-913c-4dd8-a3aa-fc9ea0e06138",
+      "name": "Decision"
+    },
+    {
+      "parameters": {
+        "resource": "case",
+        "caseFields": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "tags": "=",
+            "description": "={{ $json.output.technical_details }}",
+            "severity": "={{ $json.output.risk_score }}",
+            "summary": "={{ $json.output.summary }}",
+            "status": "New",
+            "title": "={{ $json.output.final_decision }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "displayName": "Title",
+              "id": "title",
+              "type": "string",
+              "removed": false,
+              "required": true,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "displayName": "Description",
+              "id": "description",
+              "type": "string",
+              "removed": false,
+              "required": true,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "displayName": "Severity (Severity of information)",
+              "id": "severity",
+              "type": "options",
+              "options": [
+                {
+                  "name": "Low",
+                  "value": 1
+                },
+                {
+                  "name": "Medium",
+                  "value": 2
+                },
+                {
+                  "name": "High",
+                  "value": 3
+                },
+                {
+                  "name": "Critical",
+                  "value": 4
+                }
+              ],
+              "removed": false,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "displayName": "Start Date",
+              "id": "startDate",
+              "type": "dateTime",
+              "removed": false,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "displayName": "End Date",
+              "id": "endDate",
+              "type": "dateTime",
+              "removed": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "displayName": "Tags",
+              "id": "tags",
+              "type": "string",
+              "removed": false,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "displayName": "Flag",
+              "id": "flag",
+              "type": "boolean",
+              "removed": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "displayName": "TLP (Confidentiality of information)",
+              "id": "tlp",
+              "type": "options",
+              "options": [
+                {
+                  "name": "White",
+                  "value": 0
+                },
+                {
+                  "name": "Green",
+                  "value": 1
+                },
+                {
+                  "name": "Amber",
+                  "value": 2
+                },
+                {
+                  "name": "Red",
+                  "value": 3
+                }
+              ],
+              "removed": false,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "displayName": "PAP (Level of exposure of information)",
+              "id": "pap",
+              "type": "options",
+              "options": [
+                {
+                  "name": "White",
+                  "value": 0
+                },
+                {
+                  "name": "Green",
+                  "value": 1
+                },
+                {
+                  "name": "Amber",
+                  "value": 2
+                },
+                {
+                  "name": "Red",
+                  "value": 3
+                }
+              ],
+              "removed": false,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "displayName": "Summary",
+              "id": "summary",
+              "type": "string",
+              "removed": false,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "displayName": "Status",
+              "id": "status",
+              "type": "options",
+              "removed": false,
+              "required": false,
+              "display": true,
+              "defaultMatch": false,
+              "options": [
+                {
+                  "name": "Duplicated",
+                  "value": "Duplicated",
+                  "description": "Stage: Closed"
+                },
+                {
+                  "name": "FalsePositive",
+                  "value": "FalsePositive",
+                  "description": "Stage: Closed"
+                },
+                {
+                  "name": "Indeterminate",
+                  "value": "Indeterminate",
+                  "description": "Stage: Closed"
+                },
+                {
+                  "name": "InProgress",
+                  "value": "InProgress",
+                  "description": "Stage: InProgress"
+                },
+                {
+                  "name": "New",
+                  "value": "New",
+                  "description": "Stage: New"
+                },
+                {
+                  "name": "Other",
+                  "value": "Other",
+                  "description": "Stage: Closed"
+                },
+                {
+                  "name": "TruePositive",
+                  "value": "TruePositive",
+                  "description": "Stage: Closed"
+                }
+              ]
+            },
+            {
+              "displayName": "Assignee",
+              "id": "assignee",
+              "type": "options",
+              "removed": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false,
+              "options": [
+                {
+                  "name": "Omar",
+                  "value": "omar@wazuh.com"
+                },
+                {
+                  "name": "API USER",
+                  "value": "thehive.api@wazuh.com"
+                }
+              ]
+            },
+            {
+              "displayName": "Case Template",
+              "id": "caseTemplate",
+              "type": "options",
+              "removed": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false,
+              "options": []
+            },
+            {
+              "displayName": "Tasks",
+              "id": "tasks",
+              "type": "array",
+              "removed": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "displayName": "Sharing Parameters",
+              "id": "sharingParameters",
+              "type": "array",
+              "removed": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "displayName": "Observable Rule",
+              "id": "observableRule",
+              "type": "string",
+              "removed": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      },
+      "type": "n8n-nodes-base.theHiveProject",
+      "typeVersion": 1,
+      "position": [
+        -288,
+        -192
+      ],
+      "id": "e82f85a4-47a0-46d2-ace0-818f5a57113c",
+      "name": "Create a case",
+      "credentials": {
+        "theHiveProjectApi": {
+          "id": "l2nv8n6aZvUZceeN",
+          "name": "The Hive 5 account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "comment",
+        "addTo": "case",
+        "id": {
+          "__rl": true,
+          "value": "={{ $json._id }}",
+          "mode": "id"
+        },
+        "message": "=Technical Details :\n{{ $('Decision').item.json.output.technical_details }}"
+      },
+      "type": "n8n-nodes-base.theHiveProject",
+      "typeVersion": 1,
+      "position": [
+        48,
+        -416
+      ],
+      "id": "cbbc5840-6188-4807-a494-ed599c44b222",
+      "name": "Create a comment in a case or alert",
+      "credentials": {
+        "theHiveProjectApi": {
+          "id": "l2nv8n6aZvUZceeN",
+          "name": "The Hive 5 account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "observable",
+        "id": {
+          "__rl": true,
+          "value": "={{ $json._id }}",
+          "mode": "id"
+        },
+        "dataType": "other",
+        "data": "={{ $('Decision').item.json.output.key_indicators }}",
+        "observableFields": {
+          "mappingMode": "autoMapInputData",
+          "value": {
+            "ioc": false,
+            "sighted": false,
+            "ignoreSimilarity": false
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "displayName": "Start Date",
+              "id": "startDate",
+              "type": "dateTime",
+              "removed": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "displayName": "Description",
+              "id": "message",
+              "type": "string",
+              "removed": false,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "displayName": "Tags",
+              "id": "tags",
+              "type": "string",
+              "removed": false,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "displayName": "TLP (Confidentiality of information)",
+              "id": "tlp",
+              "type": "options",
+              "options": [
+                {
+                  "name": "White",
+                  "value": 0
+                },
+                {
+                  "name": "Green",
+                  "value": 1
+                },
+                {
+                  "name": "Amber",
+                  "value": 2
+                },
+                {
+                  "name": "Red",
+                  "value": 3
+                }
+              ],
+              "removed": false,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "displayName": "PAP (Level of exposure of information)",
+              "id": "pap",
+              "type": "options",
+              "options": [
+                {
+                  "name": "White",
+                  "value": 0
+                },
+                {
+                  "name": "Green",
+                  "value": 1
+                },
+                {
+                  "name": "Amber",
+                  "value": 2
+                },
+                {
+                  "name": "Red",
+                  "value": 3
+                }
+              ],
+              "removed": false,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "displayName": "IOC",
+              "id": "ioc",
+              "type": "boolean",
+              "removed": false,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "displayName": "Sighted",
+              "id": "sighted",
+              "type": "boolean",
+              "removed": false,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "displayName": "Sighted At",
+              "id": "sightedAt",
+              "type": "dateTime",
+              "removed": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "displayName": "Ignore Similarity",
+              "id": "ignoreSimilarity",
+              "type": "boolean",
+              "removed": false,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "displayName": "Is Zip",
+              "id": "isZip",
+              "type": "boolean",
+              "removed": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "displayName": "Zip Password",
+              "id": "zipPassword",
+              "type": "string",
+              "removed": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      },
+      "type": "n8n-nodes-base.theHiveProject",
+      "typeVersion": 1,
+      "position": [
+        48,
+        16
+      ],
+      "id": "581a6571-fcf1-4794-a065-5e9fa5421bf4",
+      "name": "Create an observable",
+      "credentials": {
+        "theHiveProjectApi": {
+          "id": "l2nv8n6aZvUZceeN",
+          "name": "The Hive 5 account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "task",
+        "caseId": {
+          "__rl": true,
+          "value": "={{ $json._id }}",
+          "mode": "id"
+        },
+        "taskFields": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "mandatory": true,
+            "title": "Investigation & Response Tasks",
+            "description": "=Investigation:\n{{ $('Decision').item.json.output.recommended_investigation_steps }}\n\nResponse:\n{{ $('Decision').item.json.output.recommended_response_actions }}\n"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "displayName": "Title",
+              "id": "title",
+              "type": "string",
+              "removed": false,
+              "required": true,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "displayName": "Description",
+              "id": "description",
+              "type": "string",
+              "removed": false,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "displayName": "Group",
+              "id": "group",
+              "type": "string",
+              "removed": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "displayName": "Status",
+              "id": "status",
+              "type": "stirng",
+              "removed": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "displayName": "Flag",
+              "id": "flag",
+              "type": "boolean",
+              "removed": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "displayName": "Start Date",
+              "id": "startDate",
+              "type": "dateTime",
+              "removed": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "displayName": "Due Date",
+              "id": "dueDate",
+              "type": "dateTime",
+              "removed": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "displayName": "End Date",
+              "id": "endDate",
+              "type": "dateTime",
+              "removed": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "displayName": "Assignee",
+              "id": "assignee",
+              "type": "options",
+              "removed": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false,
+              "options": [
+                {
+                  "name": "Omar",
+                  "value": "omar@wazuh.com"
+                },
+                {
+                  "name": "API USER",
+                  "value": "thehive.api@wazuh.com"
+                }
+              ]
+            },
+            {
+              "displayName": "Mandatory",
+              "id": "mandatory",
+              "type": "boolean",
+              "removed": false,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            },
+            {
+              "displayName": "Order",
+              "id": "order",
+              "type": "number",
+              "removed": true,
+              "required": false,
+              "display": true,
+              "defaultMatch": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      },
+      "type": "n8n-nodes-base.theHiveProject",
+      "typeVersion": 1,
+      "position": [
+        48,
+        -192
+      ],
+      "id": "2271a290-afdf-45b7-8e09-e4419eae2893",
+      "name": "Create a task",
+      "credentials": {
+        "theHiveProjectApi": {
+          "id": "l2nv8n6aZvUZceeN",
+          "name": "The Hive 5 account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        352,
+        -192
+      ],
+      "id": "c9a0ab95-3500-4825-929c-3259d728e417",
+      "name": "Wait",
+      "webhookId": "5576f3f8-b1eb-419a-bfc6-700815c8b108"
+    },
+    {
+      "parameters": {
+        "sendTo": "labidi.anas.jshb999@gmail.com",
+        "subject": "=Actions Required !  {{ $('Decision').item.json.output.final_decision }}",
+        "message": "=<!DOCTYPE html> <html> <head> <meta charset=\"UTF-8\"> <title>Security Incident Notification</title> </head> <body style=\"margin:0; padding:0; background-color:#f4f6f8; font-family: Arial, Helvetica, sans-serif;\"> <table align=\"center\" width=\"600\" cellpadding=\"0\" cellspacing=\"0\" style=\"background-color:#ffffff; margin-top:30px; border-radius:8px; overflow:hidden; box-shadow:0 2px 8px rgba(0,0,0,0.08);\"> <!-- Header --> <tr> <td style=\"background-color:#1f2937; padding:20px; text-align:center;\"> <h2 style=\"color:#ffffff; margin:0;\">🚨 Security Incident Created</h2> </td> </tr> <!-- Body --> <tr> <td style=\"padding:25px; color:#333333; font-size:14px; line-height:1.6;\"> <p style=\"margin-top:0;\"> A new case has been created in TheHive for investigation. </p> <table width=\"100%\" cellpadding=\"8\" cellspacing=\"0\" style=\"border-collapse:collapse; margin-top:15px;\"> <tr> <td style=\"background-color:#f3f4f6; font-weight:bold; width:30%;\">Case ID</td> <td>{{ $('Create a case').item.json._id }}</td> </tr> <tr> <td style=\"background-color:#f3f4f6; font-weight:bold;\">Title</td> <td>{{ $('Create a case').item.json.title }}</td> </tr> <tr> <td style=\"background-color:#f3f4f6; font-weight:bold;\">Severity</td> <td> <span style=\"padding:5px 10px; border-radius:4px; background-color:#dc2626; color:#ffffff; font-weight:bold;\"> {{ $('Create a case').item.json.severityLabel }} </span> </td> </tr> <tr> <td style=\"background-color:#f3f4f6; font-weight:bold;\">Description</td> <td>{{ $('Create a case').item.json.description }}</td> </tr> </table> <p style=\"margin-top:25px;\"> Please review the case in TheHive and take appropriate action. Link:http://192.168.133.145:9000/cases/{{ $('Create a case').item.json._id }}/details </p> </td> </tr> <!-- Footer --> <tr> <td style=\"background-color:#f9fafb; text-align:center; padding:15px; font-size:12px; color:#6b7280;\"> This alert was generated automatically by your SOAR workflow (n8n). </td> </tr> </table> </body> </html>\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        672,
+        144
+      ],
+      "id": "01a0cf6c-a836-45c1-a80e-c27517a68e81",
+      "name": "Send a message",
+      "webhookId": "beb7316d-f46d-4e53-9219-0a86840f16f1",
+      "executeOnce": true,
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Fmb04lbFeLy3geIE",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "9ae99066-9dbc-475f-9806-51e9636e9e3c",
+              "leftValue": "={{ $('Extract IOCs2').item.json.sha256 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -2496,
+        0
+      ],
+      "id": "b0eba3f2-5f16-469e-b33d-39a64839bd68",
+      "name": "Decision1"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const alert = $json.body || $json;\n\nconst rule = alert.rule || {};\nconst data = alert.data || {};\nconst win = data.win?.eventdata || {};\n\nconst isSysmon =\n  !!(\n    win.image ||\n    win.hashes ||\n    win.processGuid ||\n    data.win?.system?.providerName === \"Microsoft-Windows-Sysmon\"\n  );\n\nconst isWazuhNative = !isSysmon && !!alert.rule;\n\n\n// ================================\n// Rule / MITRE information\n// ================================\n\nconst mitre = rule.mitre || {};\n\nconst ruleLevel = rule.level ?? \"N/A\";\nconst ruleDescription = rule.description || \"N/A\";\nconst ruleId = rule.id || \"N/A\";\nconst ruleGroups = rule.groups || [];\nconst firedTimes = rule.firedtimes ?? \"N/A\";\n\nconst techniqueId = Array.isArray(mitre.id)\n  ? mitre.id.join(\", \")\n  : (mitre.id || \"N/A\");\n\nconst techniqueName = Array.isArray(mitre.technique)\n  ? mitre.technique.join(\", \")\n  : (mitre.technique || \"N/A\");\n\nconst tactic = Array.isArray(mitre.tactic)\n  ? mitre.tactic.join(\", \")\n  : (mitre.tactic || \"N/A\");\n\n\n// ================================\n// Agent / manager information\n// ================================\n\nconst agent = alert.agent || {};\nconst manager = alert.manager || {};\n\n\n// ================================\n// Source IP extraction\n// ================================\n\nlet sourceIp = null;\n\n\n// 1. Native Wazuh source IP\nif (data.srcip) {\n  sourceIp = data.srcip;\n}\n\n\n// 2. Windows / Sysmon source IP\nif (!sourceIp && win.sourceIp) {\n  sourceIp = win.sourceIp;\n}\n\nif (!sourceIp && win.srcIp) {\n  sourceIp = win.srcIp;\n}\n\n\n// 3. Fallback: extract source IP from full_log\nif (!sourceIp && alert.full_log) {\n\n  const sourcePatterns = [\n\n    // SSH:\n    // Failed password for invalid user fakeuser from 192.168.133.132\n    /from\\s+(\\d{1,3}(?:\\.\\d{1,3}){3})/i,\n\n    // srcip=192.168.133.132\n    /srcip[=:\\s]+(\\d{1,3}(?:\\.\\d{1,3}){3})/i,\n\n    // src=192.168.133.132\n    /src[=:\\s]+(\\d{1,3}(?:\\.\\d{1,3}){3})/i,\n\n    // sourceip=192.168.133.132\n    /sourceip[=:\\s]+(\\d{1,3}(?:\\.\\d{1,3}){3})/i,\n\n    // source=192.168.133.132\n    /source[=:\\s]+(\\d{1,3}(?:\\.\\d{1,3}){3})/i\n  ];\n\n  for (const pattern of sourcePatterns) {\n\n    const match = alert.full_log.match(pattern);\n\n    if (match) {\n      sourceIp = match[1];\n      break;\n    }\n  }\n}\n\n\n// ================================\n// File / process / hash info\n// ================================\n\nlet filePath = \"N/A\";\nlet fileName = \"N/A\";\n\nlet md5 = null;\nlet sha1 = null;\nlet sha256 = null;\n\nlet processId = \"N/A\";\nlet processGuid = \"N/A\";\nlet imageLoaded = \"N/A\";\n\nlet signed = null;\nlet signature = \"N/A\";\nlet signatureStatus = \"N/A\";\n\nlet user = alert.user || \"N/A\";\n\n\nif (isSysmon) {\n\n  filePath =\n    win.targetFilename ||\n    win.image ||\n    \"N/A\";\n\n  fileName =\n    win.image\n      ? win.image.split(/[\\\\/]/).pop()\n      : \"N/A\";\n\n  md5 =\n    win.hashes?.match(/MD5=([^,]+)/)?.[1] ||\n    null;\n\n  sha1 =\n    win.hashes?.match(/SHA1=([^,]+)/)?.[1] ||\n    null;\n\n  sha256 =\n    win.hashes?.match(/SHA256=([^,]+)/)?.[1] ||\n    null;\n\n  processId =\n    win.processId ||\n    \"N/A\";\n\n  processGuid =\n    win.processGuid ||\n    \"N/A\";\n\n  imageLoaded =\n    win.imageLoaded ||\n    win.image ||\n    \"N/A\";\n\n  signed =\n    win.signed ??\n    null;\n\n  signature =\n    win.signature ||\n    \"N/A\";\n\n  signatureStatus =\n    win.signatureStatus ||\n    \"N/A\";\n\n  user =\n    win.user ||\n    user;\n}\n\n\n// ================================\n// Log source metadata\n// ================================\n\nconst decoderName =\n  alert.decoder?.name ||\n  \"N/A\";\n\nconst programName =\n  alert.predecoder?.program_name ||\n  \"N/A\";\n\nconst location =\n  alert.location ||\n  \"N/A\";\n\n\n// ================================\n// Classify alert type\n// ================================\n\nlet alertType = \"Other\";\n\n\nif (sha256 || sha1 || md5) {\n\n  alertType = \"File\";\n\n}\n\nelse if (\n  ruleGroups.includes(\"nmap\") ||\n  ruleGroups.includes(\"reconnaissance\") ||\n  techniqueId.includes(\"T1046\")\n) {\n\n  alertType = \"Network Scan\";\n\n}\n\nelse if (isSysmon) {\n\n  alertType = \"Process\";\n\n}\n\nelse if (ruleGroups.length) {\n\n  alertType = ruleGroups[0];\n\n}\n\n\n// ================================\n// Return normalized alert\n// ================================\n\nreturn {\n\n  // General classification\n  source_format:\n    isSysmon\n      ? \"sysmon\"\n      : isWazuhNative\n        ? \"wazuh_native\"\n        : \"unknown\",\n\n  alert_type: alertType,\n\n\n  // Rule / MITRE\n  rule_level: ruleLevel,\n  rule_description: ruleDescription,\n  rule_id: ruleId,\n  rule_groups: ruleGroups,\n  fired_times: firedTimes,\n\n  tactic: tactic,\n  technique_id: techniqueId,\n  technique_name: techniqueName,\n\n\n  // Agent / manager\n  agent_name:\n    agent.name ||\n    \"Unknown\",\n\n  agent_id:\n    agent.id ||\n    \"N/A\",\n\n  agent_ip:\n    agent.ip ||\n    \"0.0.0.0\",\n\n  manager_name:\n    manager.name ||\n    \"N/A\",\n\n\n  // Source IP\n  source_ip:\n    sourceIp,\n\n\n  // File / process / hash\n  file_path:\n    filePath,\n\n  file_name:\n    fileName,\n\n  md5,\n  sha1,\n  sha256,\n\n  process_id:\n    processId,\n\n  process_guid:\n    processGuid,\n\n  image_loaded:\n    imageLoaded,\n\n  signed,\n  signature,\n\n  signature_status:\n    signatureStatus,\n\n  user,\n\n\n  // Log source\n  decoder_name:\n    decoderName,\n\n  program_name:\n    programName,\n\n  location,\n\n\n  // Original alert\n  full_log:\n    alert.full_log ||\n    \"N/A\",\n\n  timestamp:\n    alert.predecoder?.timestamp ||\n    alert.timestamp ||\n    new Date().toISOString()\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2992,
+        0
+      ],
+      "id": "721f3a48-4675-40cc-81fa-e4e880a73290",
+      "name": "Extract IOCs2"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        -1936,
+        192
+      ],
+      "id": "b1a7eddd-7283-4707-9be8-e3f9f654f620",
+      "name": "Merge Both Results1"
+    },
+    {
+      "parameters": {
+        "curlImport": "",
+        "httpVariantWarning": "",
+        "method": "GET",
+        "url": "=https://www.virustotal.com/api/v3/ip_addresses/{{ $json.source_ip }}",
+        "": "",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "virusTotalApi",
+        "provideSslCertificates": false,
+        "sendQuery": false,
+        "sendHeaders": false,
+        "sendBody": false,
+        "options": {},
+        "infoMessage": ""
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -2160,
+        128
+      ],
+      "id": "7c785cb2-5ca2-4c01-9114-c78f49731034",
+      "name": "IP Validation through VirusTotal1",
+      "extendsCredential": "virusTotalApi",
+      "credentials": {
+        "virusTotalApi": {
+          "id": "b0PbNlihsyQWVGcn",
+          "name": "VirusTotal account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "url": "=http://ip-api.com/json/{{ $json.source_ip }}?fields=status,message,query,country,countryCode,regionName,city,lat,lon,timezone,isp,org,as,asname,mobile,proxy,hosting",
+        "options": {
+          "response": {
+            "response": {}
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -2160,
+        304
+      ],
+      "id": "32172cdf-6144-4452-b585-f6ba89d2b2d1",
+      "name": "IP API",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "dc7a7a9b-60f8-43b2-9f35-64c40e44db87",
+              "leftValue": "={{ $('Extract IOCs2').item.json.rule_groups[0] }}",
+              "rightValue": "web",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -1568,
+        -176
+      ],
+      "id": "c98f85a7-ca7d-47ab-a29e-372f00ca76f4",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "665bc8fa-90a7-4de5-ba55-ebe8aefe981f",
+              "leftValue": "={{ $json.output.automation_recommendation.should_block_ip }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -672,
+        160
+      ],
+      "id": "202a78f7-8a5a-4409-a30d-1cca6ab53380",
+      "name": "If1"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://192.168.133.131:8090/api/block",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer 12361516"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"ip\": \"{{ $('Extract IOCs2').item.json.source_ip }}\",\n  \"source\": \"n8n-soar\"\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -176,
+        144
+      ],
+      "id": "8c9385c8-243c-47a2-841d-7d89ff4527b9",
+      "name": "WAF Blocking",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "url": "http://192.168.133.131:8080/job/User-Mangment/lastSuccessfulBuild/consoleText",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -1360,
+        -192
+      ],
+      "id": "506b83cf-f5bc-4c10-9ae9-d6891bf96980",
+      "name": "Get Jenkins Console Log",
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "FeUkq2NXhSbjVMkY",
+          "name": "jenkins credential"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "try {\n    let rawLog = $input.first()?.json?.data ?? '';\n    if (typeof rawLog !== 'string') rawLog = JSON.stringify(rawLog);\n\n    // 1) Strip ANSI + normalize mojibake box-drawing chars -> │\n    const normalized = rawLog\n        .replace(/\\x1B\\[[0-9;]*[a-zA-Z]/g, '')\n        .replace(/\\u00E2\\u201D./g, '\\u2502')   // any \"â”x\" -> │\n        .replace(/\\r/g, '');\n\n    const lines = normalized.split('\\n');\n\n    const isBorder = (l) => /^\\s*[├┌└┼┬┴─]/.test(l);\n    const isRow    = (l) => l.includes('\\u2502') && !isBorder(l);\n    const hasCve   = (l) => /\\b(CVE-\\d{4}-\\d+|GHSA-[a-z0-9-]+)\\b/i.test(l);\n    const hasLib   = (l) => {\n        const c = l.split('\\u2502');\n        return c.length >= 8 && (c[1] || '').trim().length > 0;\n    };\n\n    // 2) Merge wrapped rows: continuation lines have │ but no lib and no CVE\n    const merged = [];\n    for (const line of lines) {\n        if (\n            isRow(line) && !hasCve(line) && !hasLib(line) &&\n            merged.length && isRow(merged[merged.length - 1])\n        ) {\n            merged[merged.length - 1] +=\n                ' ' + line.replace(/^\\s*\\u2502/, '').trim();\n        } else {\n            merged.push(line);\n        }\n    }\n\n    // 3) Section headers:  \"<target> (npm|node-pkg|alpine ...)\"\n    const sectionRe = /^(.+?)\\s+\\((npm|node-pkg|alpine[^)]*)\\)\\s*$/i;\n\n    const findings = [];\n    let currentSection = 'unknown';\n\n    for (const line of merged) {\n        const sec = line.match(sectionRe);\n        if (sec && !isRow(line)) {\n            currentSection = `${sec[1].trim()} (${sec[2].trim()})`;\n            continue;\n        }\n        if (!isRow(line)) continue;\n\n        const cells = line.split('\\u2502').map(c => c.trim());\n        if (cells.length < 8) continue;\n\n        // CVE / GHSA usually in cells[2], but search cells[1..3] to be safe\n        let id = null;\n        for (let i = 1; i <= 3 && i < cells.length; i++) {\n            const m = cells[i].match(/\\b(CVE-\\d{4}-\\d+|GHSA-[a-z0-9-]+)\\b/i);\n            if (m) { id = m[1]; break; }\n        }\n        if (!id) continue;\n\n        const severity = (cells[3] || '').toUpperCase();\n        if (!/CRITICAL|HIGH/.test(severity)) continue;\n\n        findings.push({\n            cve: id,\n            library: cells[1] || '',\n            severity,\n            status: cells[4] || '',\n            installedVersion: cells[5] || '',\n            fixedVersion: cells[6] || '',\n            title: cells.slice(7).filter(Boolean).join(' ').trim(),\n            section: currentSection\n        });\n    }\n\n    // 4) Deduplicate: same CVE in same section + same library\n    const seen = new Set();\n    const unique = [];\n    for (const f of findings) {\n        const key = `${f.cve}|${f.section}|${f.library}`;\n        if (!seen.has(key)) { seen.add(key); unique.push(f); }\n    }\n\n    const criticalCves = unique.filter(f => f.severity === 'CRITICAL');\n    const highCves     = unique.filter(f => f.severity === 'HIGH');\n\n    return [{\n        json: {\n            criticalCount: criticalCves.length,\n            highCount:     highCves.length,\n            totalCount:    unique.length,\n            criticalCves,\n            highCves,\n            allFindings:   unique\n        }\n    }];\n\n} catch (error) {\n    return [{\n        json: {\n            criticalCount: 0,\n            highCount: 0,\n            totalCount: 0,\n            criticalCves: [],\n            highCves: [],\n            allFindings: [],\n            error: error.message\n        }\n    }];\n}"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1200,
+        -192
+      ],
+      "id": "8789b44c-caab-4c34-bc40-a99d366b21cd",
+      "name": "Clean & Parse Jenkins Log"
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-3-flash-preview",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        -1040,
+        368
+      ],
+      "id": "86d809c6-24e6-4673-965a-4713803f4322",
+      "name": "Google Gemini Chat Model1",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "2i1zvzclfezIdjc4",
+          "name": "Google Gemini(PaLM) Api account 2"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Get Alerts": {
+      "main": [
+        [
+          {
+            "node": "Extract IOCs2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Limit": {
+      "main": [
+        [
+          {
+            "node": "Decision1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hash Validation through VirusTotal": {
+      "main": [
+        [
+          {
+            "node": "Merge Both Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hash Validation through AlienVault": {
+      "main": [
+        [
+          {
+            "node": "Merge Both Results",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Both Results": {
+      "main": [
+        [
+          {
+            "node": "Clean Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clean Results": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Simple Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Decision",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "If1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decision": {
+      "main": [
+        [
+          {
+            "node": "Create a case",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create a case": {
+      "main": [
+        [
+          {
+            "node": "Create a comment in a case or alert",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Create an observable",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Create a task",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create a task": {
+      "main": [
+        [
+          {
+            "node": "Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decision1": {
+      "main": [
+        [
+          {
+            "node": "Hash Validation through VirusTotal",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Hash Validation through AlienVault",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IP Validation through VirusTotal1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "IP API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract IOCs2": {
+      "main": [
+        [
+          {
+            "node": "Limit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IP Validation through VirusTotal1": {
+      "main": [
+        [
+          {
+            "node": "Merge Both Results1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Both Results1": {
+      "main": [
+        [
+          {
+            "node": "Clean Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IP API": {
+      "main": [
+        [
+          {
+            "node": "Merge Both Results1",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Send a message": {
+      "main": [
+        []
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Get Jenkins Console Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If1": {
+      "main": [
+        [
+          {
+            "node": "WAF Blocking",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Jenkins Console Log": {
+      "main": [
+        [
+          {
+            "node": "Clean & Parse Jenkins Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clean & Parse Jenkins Log": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "WAF Blocking": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 1
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "58a39b50-80ff-4491-b851-8b84781142f1",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "4e779028576808e306a29fc760a4d2b55b5680a1d3588b6ef984ee5afbc0844e"
+  },
+  "id": "ipFv1RPQoXAVIYng",
+  "tags": []
+}
