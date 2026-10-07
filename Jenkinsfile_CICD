@@ -1,153 +1,264 @@
-
 pipeline {
     agent any
-    
+
     tools {
         nodejs 'nodejs23'
     }
 
     environment {
         SCANNER_HOME = tool 'sonar-scanner'
-        // Tag images with the build number instead of a mutable 'latest' tag,
-        // so every deployment is traceable back to the exact build/commit
-        // that produced it, and a rollback can target a known-good tag.
-        IMAGE_TAG = "${env.BUILD_NUMBER}"
     }
+
     stages {
-        stage('Git Checkout') {
+
+        stage('Clean Workspace') {
             steps {
-                // Point this at your own repository, not a tutorial fork.
-                git branch: 'main', url: 'https://github.com/YOUR_ORG/YOUR_REPO.git'
+                deleteDir()
             }
         }
-        
+
+        stage('Git Checkout') {
+            steps {
+                git branch: 'main',
+                    credentialsId: 'github-token',
+                    url: 'https://github.com/Anas-abidi1/3-Tier-DevSecOps-pfe-Project.git'
+            }
+        }
+        stage('GitLeaks Scan') {
+    steps {
+        sh 'gitleaks dir . --exit-code 1'
+    }
+}
+
+        stage('Prepare Environment') {
+            steps {
+                withCredentials([
+                    string(credentialsId: 'mysql-root-password', variable: 'MYSQL_ROOT_PASSWORD'),
+                    string(credentialsId: 'mysql-password', variable: 'MYSQL_PASSWORD'),
+                    string(credentialsId: 'jwt-secret', variable: 'JWT_SECRET'),
+                    string(credentialsId: 'admin-name', variable: 'ADMIN_NAME'),
+                    string(credentialsId: 'admin-email', variable: 'ADMIN_EMAIL'),
+                    string(credentialsId: 'admin-password', variable: 'ADMIN_PASSWORD'),
+                    string(credentialsId: 'admin-role', variable: 'ADMIN_ROLE')
+                ]) {
+                    sh '''
+                        cat > .env <<EOF
+MYSQL_ROOT_PASSWORD=$MYSQL_ROOT_PASSWORD
+MYSQL_DATABASE=crud_app
+MYSQL_USER=crud_app_user
+MYSQL_PASSWORD=$MYSQL_PASSWORD
+JWT_SECRET=$JWT_SECRET
+CLIENT_URL=http://localhost:3000
+REACT_APP_API=http://localhost:5000
+ADMIN_NAME=$ADMIN_NAME
+ADMIN_EMAIL=$ADMIN_EMAIL
+ADMIN_PASSWORD=$ADMIN_PASSWORD
+ADMIN_ROLE=$ADMIN_ROLE
+EOF
+
+                        chmod 600 .env
+
+                        echo ".env created successfully"
+                    '''
+                }
+            }
+        }
+
         stage('Frontend Compilation') {
             steps {
                 dir('client') {
-                    sh 'find . -name "*.js" -exec node --check {} +'
+                    sh '''
+                        find . -name "*.js" -exec node --check {} +
+                    '''
                 }
             }
         }
-        
+
         stage('Backend Compilation') {
             steps {
                 dir('api') {
-                    sh 'find . -name "*.js" -exec node --check {} +'
+                    sh '''
+                        find . -name "*.js" -exec node --check {} +
+                    '''
                 }
             }
         }
-        
-        stage('GitLeaks Scan') {
+
+        stage('Dependency Check') {
             steps {
-                sh 'gitleaks detect --source ./client --exit-code 1'
-                sh 'gitleaks detect --source ./api --exit-code 1'
+                dependencyCheck(
+                    additionalArguments: '--format HTML',
+                    odcInstallation: 'dp_check',
+                    skipOnScmChange: true
+                )
             }
         }
-        
+
         stage('SonarQube Analysis') {
             steps {
                 withSonarQubeEnv('sonar') {
-                    sh ''' $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=NodeJS-Project \
-                            -Dsonar.projectKey=NodeJS-Project '''
+                    sh '''
+                        $SCANNER_HOME/bin/sonar-scanner \
+                            -Dsonar.projectName=Anas-PFE-Project \
+                            -Dsonar.projectKey=NodeJS-Project \
+                            -Dsonar.sources=api,client,mysql-init \
+                            -Dsonar.exclusions=**/dependency-check-report.html,**/dependency-check-report.xml,**/fs-report.html,**/node_modules/**,**/build/**,**/dist/**,**/coverage/**
+                    '''
                 }
             }
         }
+
         stage('Quality Gate Check') {
             steps {
                 timeout(time: 1, unit: 'HOURS') {
-                    waitForQualityGate abortPipeline: false, credentialsId: 'sonar-token'
+                    waitForQualityGate(
+                        abortPipeline: false,
+                        credentialsId: 'sonar-token'
+                    )
                 }
             }
         }
+
         stage('Trivy FS Scan') {
             steps {
-                sh 'trivy fs --format table -o fs-report.html .'
+                sh '''
+                    trivy fs \
+                        --format table \
+                        --severity HIGH,CRITICAL \
+                        .
+                '''
             }
         }
-        
-        stage('Build-Tag & Push Backend Docker Image') {
+
+        stage('Build & Scan Backend Image') {
+            steps {
+                dir('api') {
+                    sh '''
+                        docker build \
+                            -t anas999/backend:latest \
+                            .
+
+                        trivy image \
+                            --format table \
+                            --severity HIGH,CRITICAL \
+                            anas999/backend:latest
+                    '''
+                }
+            }
+        }
+
+        stage('Push Backend Image') {
             steps {
                 script {
                     withDockerRegistry(credentialsId: 'docker-cred') {
-                        dir('api') {
-                            sh "docker build -t YOUR_DOCKERHUB_USER/backend:${IMAGE_TAG} ."
-                            sh "trivy image --exit-code 1 --severity HIGH,CRITICAL --format table -o backend-image-report.html YOUR_DOCKERHUB_USER/backend:${IMAGE_TAG}"
-                            sh "docker push YOUR_DOCKERHUB_USER/backend:${IMAGE_TAG}"
-                        }
+                        sh '''
+                            docker push anas999/backend:latest
+                        '''
                     }
                 }
             }
-        }  
-            
-        stage('Build-Tag & Push Frontend Docker Image') {
+        }
+
+        stage('Build & Scan Frontend Image') {
+            steps {
+                dir('client') {
+                    sh '''
+                        docker build \
+                            -t anas999/frontend:latest \
+                            .
+
+                        trivy image \
+                            --format table \
+                            --severity HIGH,CRITICAL \
+                            anas999/frontend:latest
+                    '''
+                }
+            }
+        }
+
+        stage('Push Frontend Image') {
             steps {
                 script {
                     withDockerRegistry(credentialsId: 'docker-cred') {
-                        dir('client') {
-                            sh "docker build -t YOUR_DOCKERHUB_USER/frontend:${IMAGE_TAG} ."
-                            sh "trivy image --exit-code 1 --severity HIGH,CRITICAL --format table -o frontend-image-report.html YOUR_DOCKERHUB_USER/frontend:${IMAGE_TAG}"
-                            sh "docker push YOUR_DOCKERHUB_USER/frontend:${IMAGE_TAG}"
-                        }
-                    }
-                }
-            }
-             
-        }  
-        
-        stage('Manual Approval for Production') {
-            steps {
-                timeout(time: 1, unit: 'HOURS') {
-                    input message: 'Approve deployment to PRODUCTION?', ok: 'Deploy'
-                }
-            }
-        }
-        
-       stage('Deployment To Prod') {
-            steps {
-                script {
-                    // restrictKubeConfigAccess set to true: previously false meant
-                    // any other pipeline/job on this Jenkins instance could also
-                    // use this kubeconfig credential. true scopes it to this job.
-                    withKubeConfig(caCertificate: '', clusterName: 'devopsshack-cluster', contextName: '', credentialsId: 'k8-prod-token', namespace: 'prod', restrictKubeConfigAccess: true, serverUrl: 'https://YOUR_EKS_CLUSTER_ENDPOINT') {
-                        // NOTE: mysql-secret.yaml / backend-secret.yaml contain real
-                        // (lab-only) values for this practice project -- see the
-                        // warning comments in those files. For any non-lab project,
-                        // go back to creating these out-of-band per
-                        // mysql-secret.example.yaml / backend-secret.example.yaml
-                        // instead of applying a committed file.
-                        sh 'kubectl apply -f k8s-prod/sc.yaml'
-                        sleep 20
-                        sh 'kubectl apply -f k8s-prod/networkpolicy.yaml -n prod'
-                        sh 'kubectl apply -f k8s-prod/mysql-secret.yaml -n prod'
-                        sh 'kubectl apply -f k8s-prod/backend-secret.yaml -n prod'
-                        sh 'kubectl apply -f k8s-prod/mysql.yaml -n prod'
-                        sh 'kubectl apply -f k8s-prod/backend.yaml -n prod'
-                        sh 'kubectl apply -f k8s-prod/frontend.yaml -n prod'
-                        sh 'kubectl apply -f k8s-prod/ci.yaml'
-                        sh 'kubectl apply -f k8s-prod/ingress.yaml -n prod'
-                        // Bump the running images to this build's tag, since
-                        // frontend.yaml/backend.yaml ship with a placeholder tag
-                        // rather than a real one baked in.
-                        sh "kubectl set image deployment/backend backend=YOUR_DOCKERHUB_USER/backend:${IMAGE_TAG} -n prod"
-                        sh "kubectl set image deployment/frontend frontend=YOUR_DOCKERHUB_USER/frontend:${IMAGE_TAG} -n prod"
-                        sleep 30
+                        sh '''
+                            docker push anas999/frontend:latest
+                        '''
                     }
                 }
             }
         }
-        
-        stage('Verify Deployment To Prod') {
+
+        stage('Docker Compose Deploy') {
             steps {
-                script {
-                    withKubeConfig(caCertificate: '', clusterName: 'devopsshack-cluster', contextName: '', credentialsId: 'k8-prod-token', namespace: 'prod', restrictKubeConfigAccess: true, serverUrl: 'https://YOUR_EKS_CLUSTER_ENDPOINT') {
-                        sh 'kubectl get pods -n prod'
-                        sleep 20
-                         sh 'kubectl get ingress -n prod'
-                        
-                    }
-                }
+                sh '''
+                    echo "Stopping old deployment..."
+
+                    docker compose \
+                        -f docker-compose.yaml \
+                        down --remove-orphans
+
+                    docker rm -f \
+                        backend-api \
+                        frontend-react \
+                        mysql \
+                        2>/dev/null || true
+
+                    echo "Pulling images from Docker Hub..."
+
+                    docker pull anas999/backend:latest
+                    docker pull anas999/frontend:latest
+
+                    echo "Starting deployment..."
+
+                    docker compose \
+                        -f docker-compose.yaml \
+                        up -d
+
+                    echo "Deployment status..."
+
+                    docker compose \
+                        -f docker-compose.yaml \
+                        ps
+                '''
             }
         }
-            
+
+        stage('Application Health Check') {
+            steps {
+                sh '''
+                    echo "Waiting for containers..."
+                    sleep 10
+
+                    echo "Container status:"
+                    docker compose \
+                        -f docker-compose.yaml \
+                        ps
+
+                    echo "Backend logs:"
+                    docker logs backend-api --tail 30
+
+                    echo "Testing backend..."
+                    curl -f http://localhost:5000/ || true
+
+                    echo "Testing frontend..."
+                    curl -f http://localhost:3000/ || true
+                '''
+            }
+        }
+    }
+
+    post {
+        always {
+            echo 'CI/CD Pipeline finished.'
+        }
+
+        success {
+            echo 'CI/CD Pipeline completed successfully.'
+        }
+
+        failure {
+            echo 'CI/CD Pipeline failed. Check the failed stage and Jenkins console output.'
+        }
     }
 }
+
