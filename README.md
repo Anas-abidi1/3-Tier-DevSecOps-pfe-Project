@@ -48,3 +48,4 @@ The client now displays an animated banner welcoming you to **DevOps Shack**.
 - Real secrets (DB passwords, `JWT_SECRET`, Slack tokens) must never be committed to this repo or pasted into shared docs/PDFs. Use `.env` files locally and Jenkins credentials / a secrets manager in CI/CD.
 - If any credential in this project's history was ever exposed (shared in a chat, screenshot, doc, or committed to git), rotate it immediately rather than just changing the file.
 - The backend connects to MySQL with a dedicated `crud_app_user`, not `root` — see `docker-compose.yaml` and `.env.example`.
+test
