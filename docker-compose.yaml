@@ -35,16 +35,21 @@ services:
     depends_on:
       - mysql
     ports:
-      - "5000:5000"
+      - "127.0.0.1:5000:5000"
 
   frontend:
     image: anas999/frontend:latest
     container_name: frontend-react
     restart: always
     ports:
-      - "3000:80"
+      - "127.0.0.1:3000:80"
     depends_on:
       - backend
 
 volumes:
   mysql-data:
+
+networks:
+  default:
+    name: smartskills-net
+    external: true
